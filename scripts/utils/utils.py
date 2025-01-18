@@ -23,6 +23,7 @@ class Helpers:
         load_dotenv()
         train_db = os.getenv("TRAIN_DB")
         test_db = os.getenv("TEST_DB")
+        print(train_db)
         return train_db, test_db
     
     def small_fetch(self, db:str) -> pl.DataFrame:
@@ -35,7 +36,7 @@ class Helpers:
         Returms:
         - df (DataFrame): a polars data frame containing the firsst 10,000 rows of data 
         """
-        conn = create_engine(f"sqlite:///{db}").connect()
+        conn = create_engine(db).connect()
         query = "SELECT * FROM TrainSMILES LIMIT 10000"
         df = pl.read_database(query = query, connection=conn)
         return df

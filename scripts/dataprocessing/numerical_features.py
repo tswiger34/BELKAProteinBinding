@@ -1,7 +1,6 @@
 # Import data manipulation libraries
 from ..utils.utils import Helpers
 import polars as pl
-import sqlite3 as sql
 import logging
 from rdkit import Chem
 from rdkit.Chem import Descriptors, MACCSkeys
@@ -23,8 +22,8 @@ class NumericalFeatures:
         dev_mode (bool): Enable development mode with a subset of data.
     """
 
-    def __init__(self, df:pl.DataFrame, dev_mode: bool, num_workers:int = None):
-        helper = Helpers()
+    def __init__(self, dev_mode: bool, num_workers:int = None):
+        self.helper = Helpers()
         self.dev_mode = dev_mode
         # Set number of workers for parallel processing
         if num_workers is None:
@@ -32,53 +31,97 @@ class NumericalFeatures:
         else: self.num_workers = num_workers
         
         # Get data from the database
-        train_db, test_db = helper.get_dbs()
+        train_db, test_db = self.helper.get_dbs()
         if dev_mode:
-            self.df = helper.small_fetch(train_db)
-        else: self.df = df
-
-    def create_maccs(self):
+            self.df = self.helper.small_fetch(train_db)[["MoleculeID", "FullMolecule_Smiles"]]
+        # else: self.df = df
+    
+    @staticmethod
+    def calculate_maccs(smiles_batch: List[str]) -> Tuple[List[List[int]], List[str]]:
         """
-        Create MACCS keys for molecules.
+        Generate MACCS keys for a batch of molecules.
 
-        TODO: Implement MACCS key generation.
+        Args:
+        smiles_batch (List[str]): List of molecule SMILEs
+
+        Returns:
+        Tuple[maccs_keys(List[List[int]]), key_names(List[str])]:
+            - maccs_keys (List[List[int]]): A list of lists containing the MACCs keys values, i.e. each molecule has its MACCs keys values stored in a list, then these lists are stored in a master list
+            - key_names (List[str]): A list of the names of the MACCs keys
+            
+            Example:
+            [
+                [1,0,1,1,0],   # MACCs keys for molecule 1
+                [1,0,0,0,0],   # MACCs keys for molecule 2
+                [0,1,0,1,0]... # MACCs keys for molecule 3
+            ]
+
+        """
+        key_names = [f"MACCS_{i+1}" for i in range(166)]
+        maccs_keys = []
+        for smile in smiles_batch:
+            try:
+                mol = Chem.MolFromSmiles(smile)
+                if mol:
+                    maccs = MACCSkeys.GenMACCSKeys(mol)
+                    maccs_bits = list(maccs)[1:]
+                    maccs_keys.append(maccs_bits)
+                else:
+                    maccs_keys.append([0] * 166)
+            except Exception as e:
+                logging.error(f"Error processing SMILEs '{smile}': {e}")
+                maccs_keys.append([0] * 166)
+            
+        return maccs_keys, key_names
+    
+    @staticmethod
+    def calculate_fingerprints():
+        """
+        Create Morgan fingerprints for molecules.
+
+        TODO: Implement Morgan fingerprints generation.
+        """
+        pass
+    
+    @staticmethod
+    def calculate_3d_descriptors():
+        """
+        Create 3D descriptors for molecules.
+
+        TODO: Implement 3D descriptor generation.
         """
         pass
 
     @staticmethod
-    def calculate_features(smiles_batch: List[str]) -> Tuple[List[List[Optional[float]]], List[Optional[float]]]:
+    def calculate_descriptors(smiles_batch: List[str]) -> tuple[List[List[Optional[float]]], List[str]]:
         """
-        Calculate molecular descriptors and LogP values for a batch of SMILES strings.
+        Calculate molecular descriptors for a batch of SMILES strings. 
 
         Args:
             smiles_batch (List[str]): Batch of SMILES strings.
 
         Returns:
-            Tuple[List[List[Optional[float]]], List[Optional[float]]]:
-                - List of descriptor lists.
-                - List of LogP values.
+            tuple[descriptors(List[List[Optional[float]]]), feature_names(str)]: List of descriptors lists and a 
         """
         descriptors = []
-        mol_logps = []
         for smile in smiles_batch:
             try:
                 mol = Chem.MolFromSmiles(smile)
                 if mol:
                     desc = [func(mol) for _, func in Descriptors.descList]
                     descriptors.append(desc)
-                    mol_logps.append(_pyMolLogP(mol))
                 else:
-                    descriptors.append([None] * len(Descriptors.descList))
-                    mol_logps.append(None)
+                    descriptors.append([None] * (len(Descriptors.descList)))
             except Exception as e:
                 logging.error(f"Error processing SMILES '{smile}': {e}")
-                descriptors.append([None] * len(Descriptors.descList))
-                mol_logps.append(None)
-        return descriptors, mol_logps
+                descriptors.append([None] * (len(Descriptors.descList)))
+        feature_names = [desc[0] for desc in Descriptors.descList]
+        
+        return descriptors, feature_names
 
-    def create_descriptors(self, df: pl.DataFrame, batch_size: int = 1000) -> pl.DataFrame:
+    def create_features(self, df: pl.DataFrame, batch_size: int = 1000, feature_method = None) -> pl.DataFrame:
         """
-        Create numerical descriptors and LogP values for molecules in the DataFrame.
+        Create numerical features for molecules in the DataFrame using parallel processing and batching
 
         Args:
             df (pl.DataFrame): DataFrame containing 'FullMolecule_Smiles' column.
@@ -86,50 +129,47 @@ class NumericalFeatures:
             batch_size (int, optional): Number of SMILES per batch. Defaults to 1000.
 
         Returns:
-            pl.DataFrame: Original DataFrame with appended descriptors and 'mol_logp'.
+            pl.DataFrame: Original DataFrame with appended features.
         """
 
         try:
-            smiles_series = self.df["FullMolecule_Smiles"] if self.dev_mode else df["FullMolecule_Smiles"]
-            smiles_list = smiles_series.to_list()
+            smiles_list = self.df["FullMolecule_Smiles"].to_list()
         except KeyError as e:
             logging.error(f"Missing 'FullMolecule_Smiles' column: {e}")
             raise
 
         batches = [smiles_list[i:i + batch_size] for i in range(0, len(smiles_list), batch_size)]
-        descriptors = []
-        mol_logps = []
+        features = []
 
         try:
             with ProcessPoolExecutor(max_workers=self.num_workers) as executor:
-                for batch_desc, batch_logp in executor.map(self.calculate_features, batches):
-                    descriptors.extend(batch_desc)
-                    mol_logps.extend(batch_logp)
+                for batch_features, feature_names in executor.map(feature_method, batches):
+                    features.extend(batch_features)
+                    feature_names = feature_names
+
         except Exception as e:
-            logging.error(f"Error during parallel descriptor calculation: {e}")
+            logging.error(f"Error during parallel feature calculation: {e}")
             raise
 
-        if len(descriptors) != len(smiles_list) or len(mol_logps) != len(smiles_list):
-            logging.error("Mismatch in descriptors or LogP lengths.")
-            raise ValueError("Descriptor or LogP length mismatch.")
+        if len(features) != len(smiles_list):
+            logging.error(f"Mismatch in features length. Length of Features, Smiles: {len(features)}, {len(smiles_list)}")
+            raise ValueError("feature length mismatch.")
 
-        descriptor_names = [desc[0] for desc in Descriptors.descList]
         try:
-            descriptors_df = pl.DataFrame(descriptors, schema=descriptor_names)
-            mol_logp_df = pl.DataFrame({"mol_logp": mol_logps})
+            features_df = pl.DataFrame(features, schema=feature_names)
         except Exception as e:
-            logging.error(f"Error creating descriptor DataFrames: {e}")
+            logging.error(f"Error creating feature DataFrames: {e}")
             raise
 
         try:
-            results_df = df.hstack(descriptors_df).hstack(mol_logp_df)
+            results_df = df.hstack(features_df)
         except Exception as e:
             logging.error(f"Error concatenating DataFrames: {e}")
             raise
 
         return results_df
 
-    def insert_descriptors(self, df: pl.DataFrame):
+    def insert_features(self, db:str, table_name:str, df: pl.DataFrame):
         """
         Insert descriptors into the database.
 
@@ -149,6 +189,6 @@ if __name__ == "__main__":
     test = NumericalFeatures(dev_mode=True)
     start_time = datetime.now()
     logging.info(f"Starting new method at {start_time}")
-    new_df = test.create_descriptors_optimized(test.dev_df)
+    new_df = test.create_features(df=test.df, feature_method=test.calculate_maccs)
     print(new_df.describe())
     logging.info(f"Finished at {datetime.now()}, taking {datetime.now() - start_time}")
