@@ -5,7 +5,7 @@ from itertools import islice
 logging.basicConfig(level=logging.INFO)
 logging.info("Starting ETL process...")
 
-class data_etl:
+class DataETL:
     """
     This class manages the ETL 
     
@@ -34,10 +34,10 @@ class data_etl:
         - Updates the columns based on TargetProtein and binds values.
         - Aggregates data by molecule_smiles.
 
-        :params:
+        Args:
         - df: a polars dataframe containing the loaded chunk
 
-        :returns:
+        Returns:
         - df: a polars dataframe with the transformed chunk
         """
 
@@ -73,11 +73,11 @@ class data_etl:
             is not violated. If there is a conflict due to the the unique constraint being violated, it will update the molecule with the max of each of the bonding columns from the
             new data and the previously loaded data. This will avoid overwriting correct binding data while updating cases that are needed.           
 
-            :params:
+            Args:
             - df: the transformed polars data frame from the train_transformation method
             - batch_size: an integer for the batch size for each cursor execution
 
-            :returns:
+            Returns:
             None
             """
 
@@ -114,10 +114,10 @@ class data_etl:
         test data is small enough to not need to be handled in batches. The test data does not have a binding indicator as it is just supposed to be used to test if the 
         models can be ran on the competition test data. This way the test data remains hidden. This also means no transformations will be performed.
 
-        :params:
+        Args:
         - df: a polars data frame containing the test data
 
-        :returns:
+        Returns:
         None
         """
         ## Insert query
@@ -180,4 +180,4 @@ class data_etl:
             self.test_conn.close()
 
 if __name__ == "__main__":
-    data_etl()
+    DataETL()
