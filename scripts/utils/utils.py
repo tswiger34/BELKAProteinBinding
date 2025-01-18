@@ -1,10 +1,8 @@
 from dotenv import load_dotenv
 import os
 import polars as pl
-
-from sqlalchemy import create_engine
 from typing import Any, Dict
-from sqlalchemy import create_engine, MetaData, Table, Column, Integer, Float, String, Boolean, inspect
+from sqlalchemy import create_engine, MetaData, Column, Integer, Float, String, Engine
 from sqlalchemy.exc import SQLAlchemyError
 import logging
 class Helpers:
@@ -23,7 +21,6 @@ class Helpers:
         load_dotenv()
         train_db = os.getenv("TRAIN_DB")
         test_db = os.getenv("TEST_DB")
-        print(train_db)
         return train_db, test_db
     
     def small_fetch(self, db:str) -> pl.DataFrame:
@@ -39,9 +36,10 @@ class Helpers:
         conn = create_engine(db).connect()
         query = "SELECT * FROM TrainSMILES LIMIT 10000"
         df = pl.read_database(query = query, connection=conn)
+        conn.close()
         return df
     
-    def create_table(self, df: pl.DataFrame, table_name: str, db: str) -> None:
+    def create_table(self, df: pl.DataFrame, table_name: str, engine:Engine) -> None:
         """
         Create a SQLite table based on the provided Polars DataFrame.
 
@@ -73,7 +71,7 @@ class Helpers:
             pl.Boolean: Integer, # SQLite does not have a boolean datatype
             pl.String: String
         }
-        engine = create_engine(f"sqlite:///{db}")
+        
         metadata = MetaData()
 
         try:
@@ -87,14 +85,14 @@ class Helpers:
                 Column("MoleculeID", Integer, primary_key=True)
             ]
             for column_name, polars_dtype in df.schema.items():
-                if ("MoleculeID"| "_Smiles") in column_name:
+                if "MoleculeID" in column_name or "_Smiles" in column_name:
                     continue
                 sqlalchemy_type = dtype_mapping.get(polars_dtype, String)
                 columns.append(Column(column_name, sqlalchemy_type))
             
             # Create Table
             metadata.create_all(engine)
-            logging.info(f"Table '{table_name}' created successfully in the database '{db}'.")
+            logging.info(f"Table '{table_name}' created successfully in the database '{engine.name}'.")
         except SQLAlchemyError as e:
             logging.error(f"SQLAlchemy error occurred while creating table '{table_name}': {e}")
             raise
