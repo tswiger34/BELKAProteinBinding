@@ -1,7 +1,6 @@
 import polars as pl
 import sqlite3 as sql
 import logging
-from itertools import islice
 logging.basicConfig(level=logging.INFO)
 logging.info("Starting ETL process...")
 
