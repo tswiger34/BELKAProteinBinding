@@ -1,13 +1,13 @@
-CREATE TABLE TestSMILES (
-    ID INT PRIMARY KEY,
-    BuildingBlock1_Smiles VARCHAR(200),
-    BuildingBlock2_Smiles VARCHAR(200),
-    BuildingBlock2_Smiles VARCHAR(200),
-    FullMolecule_Smiles VARCHAR(600),
-    ProteinTargetID TINYINT,
-    Binds BIT
+CREATE TABLE [TestSMILES] (
+  [ObsID] INTEGER PRIMARY KEY AUTOINCREMENT,
+  [BuildingBlock1_Smiles] TEXT,
+  [BuildingBlock2_Smiles] TEXT,
+  [BuildingBlock3_Smiles] TEXT,
+  [FullMolecule_Smiles] TEXT,
+  [TargetProtein] TEXT
 );
 
+/*
 CREATE TABLE ProteinTargets (
     ProteinTargetID TINYINT PRIMARY KEY,
     ProteinName VARCHAR(8),
@@ -40,3 +40,4 @@ CREATE TABLE BB3_MACCS(
 CREATE TABLE TestFingerprints(
     ID INT PRIMARY KEY
 );
+*/
