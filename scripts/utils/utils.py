@@ -9,8 +9,9 @@ class Helpers:
 
     def __init__(self):
         pass
-
-    def get_dbs(self) -> tuple[str,str]:
+    
+    @staticmethod
+    def get_dbs() -> tuple[str,str]:
         """
         This creates a tuple of the paths to the training SQLite database and testing SQLite database.
 
@@ -23,7 +24,8 @@ class Helpers:
         test_db = os.getenv("TEST_DB")
         return train_db, test_db
     
-    def small_fetch(self, db:str) -> pl.DataFrame:
+    @staticmethod
+    def small_fetch(db:str) -> pl.DataFrame:
         """
         This helper function fetches all columns for the first 10,000 rows of data in the specified database and loads them into a polars dataframe
 
@@ -39,7 +41,8 @@ class Helpers:
         conn.close()
         return df
     
-    def create_table(self, df: pl.DataFrame, table_name: str, engine:Engine) -> None:
+    @staticmethod
+    def create_table(df: pl.DataFrame, table_name: str, db:str) -> None:
         """
         Create a SQLite table based on the provided Polars DataFrame.
 
@@ -91,6 +94,7 @@ class Helpers:
                 columns.append(Column(column_name, sqlalchemy_type))
             
             # Create Table
+            engine = create_engine(db)
             metadata.create_all(engine)
             logging.info(f"Table '{table_name}' created successfully in the database '{engine.name}'.")
         except SQLAlchemyError as e:
@@ -101,3 +105,22 @@ class Helpers:
             raise
         finally:
             engine.dispose()
+    
+    @staticmethod
+    def get_chunks(i:int, db:str):
+        """
+        This gets chunks of data by Molecule ID in chunks of 500,000 observations
+        """
+        conn = create_engine(db).connect()
+        try:
+            query = f"SELECT * FROM TrainSMILES WHERE MoleculeID >= {i} AND MoleculeID < {i + 500000}"
+            df = pl.read_database(query = query, connection=conn)
+            conn.close()
+            return df
+        except Exception as e:
+            logging.error(f"Error loading chunks into a data frame: {e}")
+            try: 
+                conn.close()
+            except Exception as e:
+                logging.error(f"Could not close connection: {e}")
+            raise
