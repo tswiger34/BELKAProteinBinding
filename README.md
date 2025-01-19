@@ -27,6 +27,7 @@ The goal of this project is to use the BELKA dataset to develop an MoE model for
 - DeepChem: A library with pretrained models and utilities for chemistry and drug discovery.
 
 # Project Structure
+```
 project-root/
 │
 ├── data/                  # Storing source data    
@@ -49,6 +50,7 @@ project-root/
 ├── requirements.txt       
 ├── README.md           
 └── LICENSE    
+```
 
 # Notes
 I will be working on a research paper (primarily focused on results) and a technical write up (extremely in-depth write up of methods) in parallel with this project. The links to each of these can be found below:
