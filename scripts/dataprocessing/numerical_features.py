@@ -3,8 +3,7 @@ from ..utils.utils import Helpers
 import polars as pl
 import logging
 from rdkit import Chem
-from rdkit.Chem import AllChem
-from rdkit.Chem import Descriptors, MACCSkeys, Descriptors3D
+from rdkit.Chem import Descriptors, MACCSkeys
 from rdkit.Chem.rdFingerprintGenerator import GetMorganGenerator
 from rdkit.Chem.Crippen import _pyMolLogP
 from concurrent.futures import ProcessPoolExecutor
@@ -12,12 +11,11 @@ from typing import List, Tuple, Optional
 import multiprocessing
 from datetime import datetime
 import inspect
-from sqlalchemy import create_engine, inspect as sql_inspect
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import create_engine, inspect as sql_inspect, Table, MetaData
+from sqlalchemy.dialects.sqlite import insert
 
 
 logging.basicConfig(level=logging.INFO)
-logging.info("Starting numerical features creation process...")
 
 class NumericalFeatures:
     """
@@ -27,20 +25,20 @@ class NumericalFeatures:
         dev_mode (bool): Enable development mode with a subset of data.
     """
 
-    def __init__(self, dev_mode: bool, num_workers:int = None):
+    def __init__(self, dev_mode: bool, db_train:bool, num_workers:int = None, chunk_size:int = 500000):
         self.helper = Helpers()
         self.dev_mode = dev_mode
         # Set number of workers for parallel processing
         if num_workers is None:
             self.num_workers = multiprocessing.cpu_count()
         else: self.num_workers = num_workers
-        
-        # Get data from the database
-        train_db, test_db = self.helper.get_dbs()    
-        if dev_mode:
+        self.chunk_size = chunk_size
+        # Choose the DB to connect to
+        train_db, test_db = self.helper.get_dbs()
+        if db_train:
             self.db = train_db
-            self.df = self.helper.small_fetch(self.db)[["MoleculeID", "FullMolecule_Smiles"]]
-        # else: self.df = df
+        else:
+            self.db = test_db
     
     @staticmethod
     def calculate_maccs(smiles_batch: List[str]) -> Tuple[List[List[int]], List[str]]:
@@ -173,7 +171,7 @@ class NumericalFeatures:
         """
 
         try:
-            smiles_list = self.df["FullMolecule_Smiles"].to_list()
+            smiles_list = df["FullMolecule_Smiles"].to_list()
         except KeyError as e:
             logging.error(f"Missing 'FullMolecule_Smiles' column: {e}")
             raise
@@ -211,46 +209,89 @@ class NumericalFeatures:
 
     def insert_features(self, table_name:str, df: pl.DataFrame):
         """
-        Insert descriptors into the database.
+        Insert descriptors into the database with upsert functionality.
+
+        If the table exists, perform an upsert (insert or update on conflict).
+        If the table does not exist, create the table and then insert the DataFrame.
+        Any other errors are raised.
 
         Args:
+            db (str): Database connection string or path.
+            table_name (str): Name of the table to insert data into.
             df (pl.DataFrame): DataFrame containing descriptors.
 
         Raises:
             Exception: If writing to the database fails.
         """
         engine = create_engine(self.db)
+        metadata = MetaData()
         try:
             inspector = sql_inspect(engine)
-            if inspector.has_table(table_name):
-                conn = engine.connect()
-                df.write_database(table_name=table_name, connection=conn, if_table_exists="append")
-                conn.close()
+            table_exists = inspector.has_table(table_name)
+            logging.info(f"Table '{table_name}' exists: {table_exists}")
+
+            # Reflect the table if it exists
+            if table_exists:
+                table = Table(table_name, metadata, autoload_with=engine)
+                logging.info(f"Reflecting existing table '{table_name}'.")
             else:
-                self.helper.create_table(df, table_name=table_name, engine=engine)
-                conn = engine.connect()
-                df.write_database(table_name=table_name, connection=conn, if_table_exists="append")
-                conn.close()
+                # Create the table using the helper
+                self.helper.create_table(df, table_name, self.db)
+                table = Table(table_name, metadata, autoload_with=engine)
+                logging.info(f"Created and reflected table '{table_name}'.")
+
+            # Get the list of columns in the table
+            table_columns = [c.name for c in table.c]
+            # Restrict df to only columns in table_columns
+            df_to_insert = df.select([col for col in table_columns if col in df.columns])
+
+            with engine.connect() as conn:
+                df_to_insert.write_database(table_name=table_name, connection=conn, if_table_exists="append")
+                logging.info(f"Inserted records into '{table_name}'.")
+
         except Exception as e:
             logging.error(f"Failed to write descriptors to database: {e}")
-            conn.close()
             raise
+    
+    def main_numerical_features(self):
+        logging.info("Starting numerical features creation process...")
+        # Create list of featurization methods
+        feature_methods = [
+            name for name, member in inspect.getmembers(self, predicate=inspect.isfunction)
+            if "calculate" in name
+        ]
+
+        # Setup chunk info
+        num_chunks = self.helper.get_num_rows(self.db) // self.chunk_size
+        start_time = datetime.now()
+        chunk_num = 0
+        logging.info("calculated num_chunks...")
+        # Iterate over chunks
+        for chunk in range(num_chunks):
+            # Load chunk into polars dataframe
+            start_row = chunk * self.chunk_size
+            if self.dev_mode:
+                df = self.helper.small_fetch(self.db)
+            else:
+                df = self.helper.load_chunk(i=start_row, db=self.db, chunk_size=self.chunk_size)[["MoleculeID", "FullMolecule_Smiles"]]
+            chunk_num += 1
+            logging.info(f"Starting chunk processing at {start_time}")
+            
+            # Create each of the feature sets 
+            x = 1
+            for method_name in feature_methods:
+                logging.info(f"running method {x}")
+                method = getattr(self, method_name, None)
+                if method is None:
+                    logging.error(f"Method '{method_name}' not found in NumericalFeatures.")
+                    continue
+                new_df, table_name = self.create_features(df=df, feature_method=method)
+                logging.info(f"inserting features...")
+                self.insert_features(table_name=table_name, df=new_df)
+                x+=1
+            logging.info(f"Finished chunk {chunk_num}/{num_chunks} at {datetime.now()}")
+        logging.info(f"Finished chunk featurization at {datetime.now()}")
 
 if __name__ == "__main__":
-    test = NumericalFeatures(dev_mode=True)
-    feature_methods = [
-        name for name, member in inspect.getmembers(NumericalFeatures, predicate=inspect.isfunction)
-        if "calculate" in name
-    ]
-    start_time = datetime.now()
-    logging.info(f"Starting new method at {start_time}")
-    print(feature_methods)
-    for method_name in feature_methods:
-        method = getattr(test, method_name, None)
-        if method is None:
-            logging.error(f"Method '{method_name}' not found in NumericalFeatures.")
-            continue
-        new_df, table_name = test.create_features(df=test.df, feature_method=method)
-        print(new_df.describe())
-        test.insert_features(table_name=table_name, df=test.df)
-    logging.info(f"Finished at {datetime.now()}, taking {datetime.now() - start_time}")
+    featurization = NumericalFeatures(dev_mode=False, db_train=True)
+    featurization.main_numerical_features()

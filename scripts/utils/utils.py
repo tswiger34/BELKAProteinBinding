@@ -2,8 +2,9 @@ from dotenv import load_dotenv
 import os
 import polars as pl
 from typing import Any, Dict
-from sqlalchemy import create_engine, MetaData, Column, Integer, Float, String, Engine
+from sqlalchemy import create_engine, MetaData, Column, Integer, Float, String, text, Table
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import sessionmaker
 import logging
 class Helpers:
 
@@ -40,9 +41,9 @@ class Helpers:
         df = pl.read_database(query = query, connection=conn)
         conn.close()
         return df
-    
+
     @staticmethod
-    def create_table(df: pl.DataFrame, table_name: str, db:str) -> None:
+    def create_table(df: pl.DataFrame, table_name: str, db: str) -> None:
         """
         Create a SQLite table based on the provided Polars DataFrame.
 
@@ -71,14 +72,19 @@ class Helpers:
             pl.UInt64: Integer,
             pl.Float32: Float,
             pl.Float64: Float,
-            pl.Boolean: Integer, # SQLite does not have a boolean datatype
-            pl.String: String
+            pl.Boolean: Integer,  # SQLite does not have a native boolean datatype
+            pl.Utf8: String,
+            pl.Date: String,      # SQLite stores dates as strings
+            pl.Datetime: String,  # SQLite stores datetimes as strings
+            pl.Categorical: String,
+            pl.Time: String,
+            # Add more mappings as required
         }
         
         metadata = MetaData()
 
         try:
-            # Ensure MoleculeID exists in the DataFrame
+            # Ensure 'MoleculeID' exists in the DataFrame
             if "MoleculeID" not in df.columns:
                 logging.error("'MoleculeID' column is missing from the DataFrame.")
                 raise ValueError("'MoleculeID' column is required for table creation.")
@@ -88,32 +94,47 @@ class Helpers:
                 Column("MoleculeID", Integer, primary_key=True)
             ]
             for column_name, polars_dtype in df.schema.items():
-                if "MoleculeID" in column_name or "_Smiles" in column_name:
+                if (
+                    column_name == "MoleculeID" 
+                    or column_name in ["BindsEPH", "BindsBRD", "BindsALB"] 
+                    or "_Smiles" in column_name
+                ):
                     continue
-                sqlalchemy_type = dtype_mapping.get(polars_dtype, String)
-                columns.append(Column(column_name, sqlalchemy_type))
+                else:
+                    sqlalchemy_type = dtype_mapping.get(polars_dtype, String)
+                    columns.append(Column(column_name, sqlalchemy_type))
             
-            # Create Table
+            # Create the Table object
+            table = Table(table_name, metadata, *columns)
+
+            # Create the table in the database
             engine = create_engine(db)
             metadata.create_all(engine)
-            logging.info(f"Table '{table_name}' created successfully in the database '{engine.name}'.")
+            logging.info(f"Table '{table_name}' created successfully in the database '{engine.url}'.")
+        
         except SQLAlchemyError as e:
             logging.error(f"SQLAlchemy error occurred while creating table '{table_name}': {e}")
             raise
         except Exception as e:
-            logging.error(f"An unexpected error occurred: {e}")
+            logging.error(f"An unexpected error occurred while creating table '{table_name}': {e}")
             raise
-        finally:
-            engine.dispose()
     
     @staticmethod
-    def get_chunks(i:int, db:str):
+    def load_chunk(i:int, db:str, chunk_size:int) -> pl.DataFrame:
         """
-        This gets chunks of data by Molecule ID in chunks of 500,000 observations
+        This gets chunks of data by Molecule ID in specified chunk sizes. It selects all columns for all rows greater than or equal to the starting row and less than the starting row + chunk_size
+
+        Args:
+        i (int): The starting ID of the chunk to be loaded
+        db (str): the database path for the desired database
+        chunk_size (int): the size of the chunk you want to load
+
+        Returns:
+        df (DataFrame): a polars dataframe containin the data of the chunk you wish to retrieve
         """
         conn = create_engine(db).connect()
         try:
-            query = f"SELECT * FROM TrainSMILES WHERE MoleculeID >= {i} AND MoleculeID < {i + 500000}"
+            query = f"SELECT * FROM TrainSMILES WHERE MoleculeID >= {i} AND MoleculeID < {i + chunk_size}"
             df = pl.read_database(query = query, connection=conn)
             conn.close()
             return df
@@ -124,3 +145,11 @@ class Helpers:
             except Exception as e:
                 logging.error(f"Could not close connection: {e}")
             raise
+    
+    @staticmethod
+    def get_num_rows(db):
+        engine = create_engine(db)
+        query = text("SELECT MAX(MoleculeID) FROM TrainSMILES;")
+        with engine.connect() as conn:
+            result = conn.execute(query).scalar()
+        return result
